@@ -1,6 +1,7 @@
 import os
 import requests
-import json
+# We no longer need the 'json' library
+# import json 
 
 # --- CONFIGURATION ---
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
@@ -21,18 +22,21 @@ def main(context):
     """
     This is the main function that Appwrite will run.
     """
-    # ⭐️ FIX: First, check if there is any data in the request body.
-    if not context.req.body:
-        context.log("Manual execution or empty request body. Skipping.")
-        return context.res.json({'status': 'ok, no data'})
-
     try:
-        # Now we can safely parse the JSON
-        update = json.loads(context.req.body)
-        context.log(f"Received update: {update}")
+        # ⭐️ FIX: Appwrite automatically parses the body into a dictionary.
+        # We don't need json.loads(). We can use the body directly.
+        update = context.req.body
+        context.log(f"Received update object: {update}")
 
-        if 'message' in update and 'text' in update['message']:
-            message = update['message']
+        # Check if the update is a valid dictionary and contains a message
+        if not update or 'message' not in update:
+            context.log("Manual execution or invalid payload. Skipping.")
+            return context.res.json({'status': 'ok, no data'})
+
+        message = update['message']
+        
+        # Check if the message contains text
+        if 'text' in message:
             chat_id = message['chat']['id']
             text = message['text']
             
