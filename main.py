@@ -1,119 +1,80 @@
 import os
-import json
 import requests
-from appwrite.client import Client
-from appwrite.services.databases import Databases
-from appwrite.id import ID
-from appwrite.query import Query
+import json
 
-# --- Appwrite Configuration ---
-APPWRITE_ENDPOINT = os.environ.get("APPWRITE_ENDPOINT")
-APPWRITE_API_KEY = os.environ.get("APPWRITE_API_KEY")
-APPWRITE_PROJECT_ID = os.environ.get("APPWRITE_PROJECT_ID")
-APPWRITE_DATABASE_ID = "6865a12e0028549f1ee0"  # Replace with your Appwrite Database ID
-APPWRITE_COLLECTION_ID = "6865a159003230cf8118" # Replace with your Appwrite Collection ID
+# --- CONFIGURATION ---
+# These will be set in your Appwrite Function's Environment Variables
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+# This is your personal Telegram user ID, where the bot will send messages.
+OWNER_CHAT_ID = os.environ.get('OWNER_CHAT_ID')
 
-# --- Telegram Configuration ---
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = "-1001953596222"  # Replace with your Telegram Channel ID
-SOURCE_CHANNELS = ["@drtel18", "esteghlaal_twitter"] # Replace with the source channel usernames or IDs
+# The greeting message in Persian
+GREETING_MESSAGE = "سلام من آماده ام که پیامتو بخونم"
 
-# --- OpenRouter Configuration ---
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-YOUR_SITE_URL = "http://localhost"  # Replace with your website or a placeholder
-YOUR_APP_NAME = "Telegram Bot"
+def send_telegram_message(chat_id, text):
+    """A helper function to send a message using the Telegram Bot API."""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        'chat_id': chat_id,
+        'text': text
+    }
+    # We use requests.post and send data as json
+    response = requests.post(url, json=payload)
+    return response.json()
 
 def main(context):
     """
-    Main function to be executed by Appwrite.
+    This is the main function that Appwrite will run when Telegram sends a notification.
     """
-    # Initialize Appwrite client
-    client = Client()
-    client.set_endpoint(APPWRITE_ENDPOINT)
-    client.set_project(APPWRITE_PROJECT_ID)
-    client.set_key(APPWRITE_API_KEY)
-    databases = Databases(client)
+    # The data from Telegram comes in the request body
+    try:
+        # Parse the JSON payload from Telegram
+        update = json.loads(context.req.body)
+        context.log(f"Received update: {update}")
 
-    for channel in SOURCE_CHANNELS:
-        try:
-            # Get the latest messages from the source channel
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getChatHistory"
-            params = {"chat_id": channel, "limit": 10} # Get last 10 messages
-            response = requests.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
+        # Check if the update contains a message with text
+        if 'message' in update and 'text' in update['message']:
+            message = update['message']
+            chat_id = message['chat']['id']
+            text = message['text']
+            
+            # Get information about the sender
+            sender_info = message['from']
+            sender_name = sender_info.get('first_name', '')
+            if sender_info.get('last_name'):
+                sender_name += f" {sender_info.get('last_name')}"
+            sender_username = sender_info.get('username', 'N/A')
+            sender_id = sender_info['id']
 
-            if not data["ok"]:
-                context.log(f"Error getting messages from {channel}: {data['description']}")
-                continue
+            # --- LOGIC FOR THE BOT ---
 
-            for message in data["result"]:
-                message_id = str(message["message_id"])
+            # 1. If the user sends "/start", send the greeting message back to them.
+            if text == '/start':
+                context.log(f"User {sender_name} started the bot. Sending greeting.")
+                send_telegram_message(chat_id, GREETING_MESSAGE)
+                
+                # Also notify the owner that a new user has started the bot
+                notification_text = f"✅ New user started the bot:\nName: {sender_name}\nUsername: @{sender_username}\nUser ID: {sender_id}"
+                send_telegram_message(OWNER_CHAT_ID, notification_text)
 
-                # Check if the message has already been processed
-                try:
-                    documents = databases.list_documents(
-                        database_id=APPWRITE_DATABASE_ID,
-                        collection_id=APPWRITE_COLLECTION_ID,
-                        queries=[Query.equal("message_id", message_id)]
-                    )
-                    if documents['total'] > 0:
-                        context.log(f"Message {message_id} already processed.")
-                        continue
-                except Exception as e:
-                    context.error(f"Error checking database: {e}")
-                    # If we can't check the DB, we shouldn't proceed
-                    continue
+            # 2. For any other message, forward it to the owner.
+            else:
+                context.log(f"Forwarding message from {sender_name} to owner.")
+                
+                # Create a nicely formatted message to forward
+                forwarded_message = (
+                    f"📩 New message from {sender_name} (@{sender_username}):\n\n"
+                    f'"{text}"\n\n'
+                    f"Reply to this user by sending a message to chat ID: {chat_id}"
+                )
+                
+                send_telegram_message(OWNER_CHAT_ID, forwarded_message)
 
+        return context.res.json({'status': 'ok'})
 
-                if "text" in message:
-                    original_text = message["text"]
+    except Exception as e:
+        context.error(f"An error occurred: {e}")
+        # It's good practice to still return a success status to Telegram
+        # so it doesn't keep trying to send the same failed update.
+        return context.res.json({'status': 'error handled'})
 
-                    # Modify the text using OpenRouter AI
-                    try:
-                        ai_response = requests.post(
-                            url="https://openrouter.ai/api/v1/chat/completions",
-                            headers={
-                                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                                "HTTP-Referer": YOUR_SITE_URL,
-                                "X-Title": YOUR_APP_NAME,
-                                "Content-Type": "application/json"
-                            },
-                            data=json.dumps({
-                                "model": "mistralai/mistral-7b-instruct:free", # A good free model
-                                "messages": [
-                                    {"role": "user", "content": f"Rewrite the following message, and at the end, add 'Posted from my awesome channel!': {original_text}"}
-                                ]
-                            })
-                        )
-                        ai_response.raise_for_status()
-                        modified_text = ai_response.json()["choices"][0]["message"]["content"]
-                    except Exception as e:
-                        context.error(f"Error with OpenRouter: {e}")
-                        # If AI fails, post the original message
-                        modified_text = original_text + "\n\nPosted from my awesome channel!"
-
-
-                    # Post the modified message to your channel
-                    try:
-                        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-                        params = {"chat_id": TELEGRAM_CHAT_ID, "text": modified_text}
-                        post_response = requests.get(url, params=params)
-                        post_response.raise_for_status()
-                        context.log(f"Posted message to {TELEGRAM_CHAT_ID}")
-
-                        # Save the message ID to the database
-                        databases.create_document(
-                            database_id=APPWRITE_DATABASE_ID,
-                            collection_id=APPWRITE_COLLECTION_ID,
-                            document_id=ID.unique(),
-                            data={"message_id": message_id}
-                        )
-
-                    except Exception as e:
-                        context.error(f"Error posting to Telegram or saving to DB: {e}")
-
-        except Exception as e:
-            context.error(f"An error occurred with channel {channel}: {e}")
-
-    return context.res.json({"status": "ok"})
